@@ -35,11 +35,7 @@ addon.desc    = 'Minimal roll-maintenance helper. Roll data and packet-parsing a
 
 require('common')
 
-----------------------------------------------------------------------------
--- Static data
-----------------------------------------------------------------------------
 
--- ability id -> { name, buffid, lucky, unlucky }
 local rollInfo = {
     [105] = {name="Chaos Roll",       buffid=317, lucky=4,  unlucky=8},
     [98]  = {name="Fighter's Roll",   buffid=310, lucky=5,  unlucky=9},
@@ -72,7 +68,6 @@ local rollInfo = {
     [390] = {name="Naturalist's Roll",buffid=339, lucky=3,  unlucky=7},
 }
 
--- shorthand keyword -> ability id, e.g. /ch roll1 cor or /ch set1 hunter
 local rollKeywords = {
     chaos    = 105,
     drk      = 105,
@@ -190,9 +185,7 @@ local function resolveRollArg(arg)
     return nil
 end
 
-----------------------------------------------------------------------------
--- Settings
-----------------------------------------------------------------------------
+-- settings
 
 local defaults = {
     enabled    = false,
