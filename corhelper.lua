@@ -75,12 +75,11 @@ local rollInfo = {
 -- shorthand keyword -> ability id, e.g. /ch roll1 cor or /ch set1 hunter
 local rollKeywords = {
     chaos    = 105,
-    chr      = 105,
     drk      = 105,
 
     fighter  = 98,
     fighters = 98,
-    ftr      = 98,
+    war      = 98,
 
     wizard   = 101,
     wizards  = 101,
@@ -100,7 +99,7 @@ local rollKeywords = {
 
     hunter   = 108,
     hunters  = 108,
-    hun      = 108,
+    rng      = 108,
 
     magus    = 113,
     mag      = 113,
@@ -108,6 +107,7 @@ local rollKeywords = {
     healer   = 100,
     healers  = 100,
     heal     = 100,
+    whm     = 100,
 
     drachen  = 111,
     drg      = 111,
@@ -120,14 +120,14 @@ local rollKeywords = {
     mnk      = 99,
 
     beast    = 106,
-    bst      = 106,
+    pet      = 106,
 
     samurai  = 109,
     sam      = 109,
 
     warlock  = 102,
     warlocks = 102,
-    wlk      = 102,
+    blu      = 102,
 
     puppet   = 115,
     pup      = 115,
@@ -206,8 +206,6 @@ local defaults = {
 local settings = {}
 for k, v in pairs(defaults) do settings[k] = v end
 
--- no ashita.settings module on interface-16; config is a Lua table literal
--- in config\addons\CorHelper\<playername>.lua
 local function configPath(playername)
     return string.format('%sconfig\\addons\\%s\\%s.lua', AshitaCore:GetInstallPath(), addon.name, playername)
 end
@@ -234,8 +232,6 @@ local function load_config()
     local ok, loaded = pcall(function() return loadfile(path)() end)
     if not ok or not loaded then return nil end
 
-    -- merge over defaults so an old/partial save file doesn't leave new
-    -- fields nil after an addon update
     local cfg = {}
     for k, v in pairs(defaults) do cfg[k] = v end
     for k, v in pairs(loaded) do cfg[k] = v end
@@ -262,7 +258,7 @@ end
 
 local COLOR_ON    = '\31\030' -- green
 local COLOR_OFF   = '\31\167' -- red/grey
-local COLOR_VALUE = '\31\005' -- yellow/highlight
+local COLOR_VALUE = '\31\005' -- yellow
 local COLOR_RESET = '\31\207'
 
 local function colorBool(b, onText, offText)
@@ -287,39 +283,25 @@ local function printStatus()
     msg('  Debug: ' .. colorBool(settings.debug))
 end
 
-----------------------------------------------------------------------------
--- State
-----------------------------------------------------------------------------
 
-local FIRE_DELAY = 3          -- seconds between fired actions, to avoid spam
+local FIRE_DELAY = 3
 
--- separate timers for two different concerns: tick() fires roll1/roll2 on its
--- own slow poll, while the double-up reaction needs to fire promptly right
--- after a roll-result packet lands. Sharing one timer meant a fresh roll
--- resetting the clock would then block the double-up check that follows
--- a split-second later, since not enough time had passed yet.
 local lastRollFireTime = 0
 local lastDoubleUpFireTime = 0
 
--- Double-Up can't be queued the instant a roll lands — the roll's own cast
--- animation is still locking the client out of another /ja. Instead of
--- firing immediately, we mark a target time and let the regular render-tick
--- poll (which already runs every TICK_INTERVAL) fire it once that's passed.
-local DOUBLEUP_ANI_DELAY = 2 -- seconds to wait out the prior roll's ani lock
+local DOUBLEUP_ANI_DELAY = 2
 local pendingDoubleUpAt = nil
 
--- set when a packet tells us we should double up but Double-Up's own
--- recast hadn't cleared yet; tick() retries until it does
+
 local doubleUpWanted = false
-local doubleUpWantedRoll = nil -- which rollInfo entry triggered it, for redundant checks
+local doubleUpWantedRoll = nil
 
 local haveRoll1, haveRoll2, haveBust = false, false, false
 
 local player, playerid = nil, nil
 
-----------------------------------------------------------------------------
--- Helpers
-----------------------------------------------------------------------------
+
+-- helpers
 
 local function haveBuffId(buffid)
     local pdata = AshitaCore:GetMemoryManager():GetPlayer()
@@ -340,8 +322,6 @@ local function updateBuffState()
     haveBust  = haveBuffId(309)
 end
 
--- interface-16 has no ffxi.recast module; recast timers are read directly
--- off the memory manager's recast timer slots instead
 local function getAbilityRecast(abilityId)
     local mmRecast = AshitaCore:GetMemoryManager():GetRecast()
     if not mmRecast then return 0 end
@@ -360,18 +340,10 @@ local function updateRecast()
     playerid  = AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0)
 end
 
--- Auto Double-Up behavior:
---   - Stop on lucky.
---   - Double-Up when below lucky.
---   - Stop when above lucky (no bust gamble; Double-Up's add is 1-11, so an
---     overshoot can never be guaranteed bust-proof).
 local function shouldDoubleUp(rollNum, info)
     return rollNum < info.lucky
 end
 
-----------------------------------------------------------------------------
--- Action queue (single delayed fire per tick, like a manual macro would be)
-----------------------------------------------------------------------------
 
 local function queueAbility(name)
     AshitaCore:GetChatManager():QueueCommand(1, '/ja "' .. name .. '" <me>')
@@ -381,7 +353,6 @@ local function tick()
     if not settings.enabled then return end
     if player == nil then return end
 
-    -- fire a scheduled double-up once its ani-lock wait has elapsed
     if pendingDoubleUpAt and os.time() >= pendingDoubleUpAt then
         msg('Doubling up...')
         queueAbility('Double-Up')
@@ -389,12 +360,8 @@ local function tick()
         pendingDoubleUpAt = nil
     end
 
-    -- retry a double-up that was wanted but blocked by Double-Up's own
-    -- recast at the time; once that recast clears, schedule it now
     if doubleUpWanted and not pendingDoubleUpAt then
         if haveBust or not doubleUpWantedRoll or not haveBuffId(doubleUpWantedRoll.buffid) then
-            -- the roll buff that triggered this is gone (busted, expired,
-            -- or replaced) — drop the stale retry instead of blocking forever
             doubleUpWanted = false
             doubleUpWantedRoll = nil
         else
@@ -418,11 +385,9 @@ local function tick()
     if now - lastRollFireTime < FIRE_DELAY then return end
 
     if settings.engaged and player.Status ~= 1 then return end
-    if haveBuffId(16) or haveBuffId(261) then return end -- amnesia/impairment
-    if haveBust then return end -- no auto-fold by design; wait it out or handle manually
+    if haveBuffId(16) or haveBuffId(261) then return end 
+    if haveBust then return end 
 
-    -- Phantom Roll has a shared recast across both roll slots; firing roll2
-    -- right after roll1 gets rejected by the server until this clears
     local phantomRecast = getAbilityRecast(193) -- JAid 97, RecastId 193
     if phantomRecast > 0 then return end
 
@@ -447,14 +412,12 @@ local function tick()
     end
 end
 
-----------------------------------------------------------------------------
--- Events
-----------------------------------------------------------------------------
+-- events
 
 local settingsLoaded = false
 
 ashita.events.register('load', 'corhelper_load_cb', function()
-    -- player entity may not exist yet here; actual load happens on first render
+
 end)
 
 ashita.events.register('unload', 'corhelper_unload_cb', function()
@@ -462,19 +425,19 @@ ashita.events.register('unload', 'corhelper_unload_cb', function()
 end)
 
 local lastTickTime = 0
-local TICK_INTERVAL = 0.5 -- seconds; render fires 30-60x/sec, no need to poll that often
+local TICK_INTERVAL = 0.5
 
 ashita.events.register('d3d_present', 'corhelper_present_cb', function()
     if not settingsLoaded then
         local p = GetPlayerEntity()
         if p then
             local loaded = load_config()
-            if loaded then settings = loaded end -- else: keep the defaults already in `settings`
+            if loaded then settings = loaded end
             settingsLoaded = true
             msg('Loaded.')
             printStatus()
         else
-            return -- wait for player entity before doing anything else
+            return
         end
     end
 
@@ -488,9 +451,6 @@ ashita.events.register('d3d_present', 'corhelper_present_cb', function()
     tick()
 end)
 
--- Read the roll result off the action packet purely to decide on a single
--- double-up — no branching between abilities, no gamble logic, no reading
--- past what's needed for the lucky/unlucky comparison described above.
 ashita.events.register('packet_in', 'corhelper_packet_in_cb', function(e)
     local id = e.id
     local packet = e.data_raw
@@ -505,7 +465,6 @@ ashita.events.register('packet_in', 'corhelper_packet_in_cb', function(e)
     if not rollInfo[param] then return end
     if actorId ~= playerid then return end
 
-    -- only the first target's first action param (the roll number) matters here
     local bit = 150
     local targetId = ashita.bits.unpack_be(packet, bit, 32)
     local rollNum = ashita.bits.unpack_be(packet, bit + 36 + 27, 17)
@@ -520,9 +479,8 @@ ashita.events.register('packet_in', 'corhelper_packet_in_cb', function(e)
     if settings.debug then msg('DEBUG packet reached, autodouble=' .. tostring(settings.autodouble)) end
 
     if settings.autodouble then
-        -- read recast live here rather than trusting the throttled render-cycle
-        -- value, since this packet can arrive between render ticks
-        local liveDoubleUpRecast = getAbilityRecast(194) -- JAid 123, RecastId 194
+
+        local liveDoubleUpRecast = getAbilityRecast(194)
         local wantsDouble = shouldDoubleUp(rollNum, info)
 
         if settings.debug then
@@ -553,9 +511,8 @@ ashita.events.register('packet_in', 'corhelper_packet_in_cb', function(e)
     end
 end)
 
-----------------------------------------------------------------------------
--- Commands
-----------------------------------------------------------------------------
+
+-- commands
 
 ashita.events.register('command', 'corhelper_command_cb', function(e)
     local args = e.command:args()
@@ -565,7 +522,6 @@ ashita.events.register('command', 'corhelper_command_cb', function(e)
 
     local sub = args[2]
 
-    -- /ch set1 cor set2 hunter -- sets both rolls in one line
     if sub == 'set1' or sub == 'set2' then
         local argCount = #args
         local i = 2
